@@ -9,6 +9,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Load failure on oh-my-pi (a fork of Pi): the extension imported `parseSkillBlock` from the coding-agent core — a symbol oh-my-pi does not export — which threw `Export named 'parseSkillBlock' not found` at load and silently disabled the Warp tab indicator. Removed the Pi-specific `<skill>`-wrapper parsing.
+- Auto-generated session names now show on the Warp tab. The title spinner snapshotted the title at turn start (CSI 22/23 title stack) and restored it on stop, clobbering the name Pi sets in the background *mid-turn* — only manual `/rename` (run at idle) survived. The spinner now renders the live session name (`getSessionName()`, falling back to the repo basename) and writes it explicitly on stop instead of restoring a stale snapshot.
 
 ### Changed
 - Skill invocations now render from the structured `skill-prompt` `custom_message` entry (`details.{ name, args }`) as `/skill:<name> <args>`, instead of regex-parsing an expanded prompt body. `prompt_submit` derives its query from the branch's last user-attributed entry (falling back to the raw prompt) and truncates to the existing 200-char cap.

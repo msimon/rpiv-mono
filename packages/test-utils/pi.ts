@@ -139,13 +139,14 @@ export function createMockUI(overrides: Partial<ExtensionUIContext> = {}): MockU
 	} as unknown as MockUI;
 }
 
-export function createMockSessionManager(branch: SessionEntry[] = []) {
+export function createMockSessionManager(branch: SessionEntry[] = [], sessionName?: string) {
 	return {
 		getBranch: vi.fn(() => branch),
 		getEntries: vi.fn(() => branch),
 		getLeafId: vi.fn(() => (branch.length ? branch[branch.length - 1].id : null)),
 		getSessionFile: vi.fn(() => "/tmp/test-session.jsonl"),
 		getSessionId: vi.fn(() => "test-session"),
+		getSessionName: vi.fn(() => sessionName),
 	};
 }
 
@@ -162,6 +163,7 @@ export interface MockCtxOptions {
 	cwd?: string;
 	model?: Model<Api>;
 	branch?: SessionEntry[];
+	sessionName?: string;
 	models?: Model<Api>[];
 	ui?: Partial<ExtensionUIContext>;
 }
@@ -172,7 +174,7 @@ export function createMockCtx(opts: MockCtxOptions = {}): ExtensionContext {
 		cwd: opts.cwd ?? "/tmp/test-cwd",
 		model: opts.model,
 		ui: createMockUI(opts.ui),
-		sessionManager: createMockSessionManager(opts.branch ?? []),
+		sessionManager: createMockSessionManager(opts.branch ?? [], opts.sessionName),
 		modelRegistry: createMockModelRegistry(opts.models ?? []),
 		isIdle: vi.fn(() => true),
 	} as unknown as ExtensionContext;

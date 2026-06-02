@@ -1,43 +1,35 @@
 /**
  * rpiv-warp — Tab-title activity spinner.
  *
- * Warp's per-tab "moving dots" animation is NOT part of the OSC 777
- * cli-agent protocol (research: agent: "claude" payloads with the full
- * OSC 777 lifecycle still produce no animation). It's a side effect of
- * the foreground process continuously rewriting its terminal title via
- * OSC 0 (`\x1b]0;<title>\x07`). Claude Code drives this by ticking
- * braille glyphs through the title every ~80ms while a request is in
- * flight (anthropics/claude-code#17887). Same mechanism animates
- * activity indicators in iTerm2, Ghostty, tmux, Windows Terminal —
- * terminal-side, not Warp-specific. Both reference plugins
- * (warpdotdev/claude-code-warp, warpdotdev/opencode-warp) emit ONLY OSC 777
- * — no spinner — confirming the dots originate in the agent process.
+ * Warp's per-tab "moving dots" animation is NOT part of the OSC 777 cli-agent
+ * protocol — it's a side effect of the foreground process continuously
+ * rewriting its terminal title via OSC 0 (`\x1b]0;<title>\x07`). Ticking
+ * braille glyphs through the title every ~160ms while a turn is in flight
+ * animates the indicator (same mechanism in iTerm2, Ghostty, tmux, Windows
+ * Terminal — terminal-side, not Warp-specific).
  *
- * Title-preservation strategy: the original Warp tab title (e.g.
- * `π - rpiv-mono`, set by Pi at startup) MUST survive the animation
- * round trip — and during the animation, only the FIRST character (the
- * Pi mascot) is swapped for the rotating glyph; the suffix (` - <repo>`)
- * stays put.
+ * Label strategy: the spinner shows the LIVE session label — the agent's
+ * session name when set, else the repo (`basename(cwd)`) — supplied by
+ * `index.ts` as a getter and re-read on every tick. This matters because Pi
+ * auto-generates the session name in the background *during* a turn; reading
+ * it live means the new name lands in the tab within one frame instead of
+ * being clobbered.
  *
- *   on agent_start(suffix)        → CSI 22;0t     (push current title)
- *   while running, every 160ms    → OSC 0         (write `<glyph><suffix>`)
- *   on agent_end                  → CSI 23;0t     (pop — original restored)
+ *   on agent_start(getLabel)   → start ticking
+ *   while running, every 160ms → OSC 0  (`<glyph> <getLabel()>`)
+ *   on agent_end(getLabel)     → OSC 0  (`<getLabel()>`, no glyph)
  *
- * The suffix is supplied by callers in `index.ts` from `ctx.cwd`
- * (` - ${basename(cwd)}`); on a stop, push/pop restores whatever the
- * terminal had before — typically Pi's `π${suffix}`. Push/pop is
- * supported by Warp, iTerm2, Ghostty, tmux, Linux console; terminals
- * that don't implement it ignore the CSI silently.
+ * On stop we WRITE the current label rather than restoring a title-stack
+ * snapshot (no CSI 22/23): a snapshot taken at turn start cannot reflect a
+ * name set mid-turn, and explicit writes are robust on terminals that don't
+ * implement the title stack.
  *
- * Module state: a single in-flight ticker. `startSpinner`/`stopSpinner`
- * are idempotent — overlapping calls within one agent loop are safe.
- * Timer is `unref()`d so a stray interval cannot block process exit.
- * `__resetState` is the test-cleanup contract (timer-only; no I/O so
- * the per-test fs mock isn't polluted with a stray pop sequence);
- * `test/setup.ts` invokes it in `beforeEach`.
+ * Module state: a single in-flight ticker. `startSpinner`/`stopSpinner` are
+ * idempotent. The timer is `unref()`d so a stray interval cannot block exit.
+ * `__resetState` is the test-cleanup contract (timer-only; no I/O).
  */
 
-import { popTitleStack, pushTitleStack, writeOSC0 } from "./warp-notify.js";
+import { writeOSC0 } from "./warp-notify.js";
 
 // ---------------------------------------------------------------------------
 // Constants — tunable at one site
@@ -69,8 +61,9 @@ export const FRAME_INTERVAL_MS = 160;
 // Pure formatter — no I/O
 // ---------------------------------------------------------------------------
 
-export function activeTitle(frameIndex: number, suffix: string = ""): string {
-	return `${SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length]}${suffix}`;
+export function activeTitle(frameIndex: number, label: string = ""): string {
+	const glyph = SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length];
+	return label ? `${glyph} ${label}` : glyph;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,14 +73,14 @@ export function activeTitle(frameIndex: number, suffix: string = ""): string {
 interface Ticker {
 	timer: ReturnType<typeof setInterval>;
 	frame: number;
-	suffix: string;
+	getLabel: () => string;
 }
 
 let active: Ticker | undefined;
 
 function tick(): void {
 	if (!active) return;
-	writeOSC0(activeTitle(active.frame, active.suffix));
+	writeOSC0(activeTitle(active.frame, active.getLabel()));
 	active.frame = (active.frame + 1) % SPINNER_FRAMES.length;
 }
 
@@ -95,19 +88,19 @@ function tick(): void {
 // Public API — wired from index.ts agent-loop boundaries
 // ---------------------------------------------------------------------------
 
-export function startSpinner(suffix: string = ""): void {
+export function startSpinner(getLabel: () => string = () => ""): void {
 	if (active) return;
-	pushTitleStack();
 	const timer = setInterval(tick, FRAME_INTERVAL_MS);
 	if (typeof timer.unref === "function") timer.unref();
-	active = { timer, frame: 0, suffix };
+	active = { timer, frame: 0, getLabel };
 }
 
-export function stopSpinner(): void {
+export function stopSpinner(getLabel?: () => string): void {
 	if (!active) return;
+	const label = getLabel ?? active.getLabel;
 	clearInterval(active.timer);
 	active = undefined;
-	popTitleStack();
+	writeOSC0(label());
 }
 
 export function __resetState(): void {

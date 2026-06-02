@@ -272,29 +272,22 @@ describe("tool_execution_end handler", () => {
 });
 
 describe("spinner lifecycle wiring", () => {
-	const PUSH = "\x1b[22;0t";
-	const POP = "\x1b[23;0t";
-	// createMockCtx() defaults cwd to "/tmp/test-cwd"; index.ts derives the
-	// title suffix as ` - ${basename(cwd)}` so the spinner writes preserve
-	// the rest of the original `π - <repo>` tab title.
-	const SUFFIX = " - test-cwd";
+	// createMockCtx() defaults cwd to "/tmp/test-cwd" with no session name, so
+	// the spinner label falls back to the repo basename "test-cwd".
+	const LABEL = "test-cwd";
 
-	function classify(write: Mock): { osc777: number; titleSets: string[]; pushes: number; pops: number } {
+	function classify(write: Mock): { osc777: number; titleSets: string[] } {
 		let osc777 = 0;
-		let pushes = 0;
-		let pops = 0;
 		const titleSets: string[] = [];
 		for (const call of write.mock.calls) {
 			const bytes = String(call[1]);
 			if (bytes.startsWith("\x1b]777;notify;")) osc777++;
 			else if (bytes.startsWith("\x1b]0;")) titleSets.push(bytes.replace(/^\x1b\]0;/, "").replace(/\x07$/, ""));
-			else if (bytes === PUSH) pushes++;
-			else if (bytes === POP) pops++;
 		}
-		return { osc777, titleSets, pushes, pops };
+		return { osc777, titleSets };
 	}
 
-	it("agent_start pushes the title stack; agent_end pops it (original restored)", async () => {
+	it("agent_start ticks `<glyph> <label>`; agent_end writes the plain label", async () => {
 		setWorkingWarpEnv();
 		const { write } = primeFs();
 		vi.useFakeTimers();
@@ -306,34 +299,29 @@ describe("spinner lifecycle wiring", () => {
 			await start?.({} as never, createMockCtx() as never);
 			const opened = classify(write);
 			expect(opened.osc777).toBe(2); // session_start (defensive) + prompt_submit
-			expect(opened.pushes).toBe(1);
-			expect(opened.pops).toBe(0);
-			expect(opened.titleSets).toEqual([]);
+			expect(opened.titleSets).toEqual([]); // no synchronous title write
 
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS * 3);
-			const mid = classify(write);
-			expect(mid.titleSets.length).toBe(3);
-			expect(mid.titleSets[0]).toBe(`${SPINNER_FRAMES[0]}${SUFFIX}`);
-			expect(mid.titleSets[1]).toBe(`${SPINNER_FRAMES[1]}${SUFFIX}`);
-			expect(mid.titleSets[2]).toBe(`${SPINNER_FRAMES[2]}${SUFFIX}`);
+			expect(classify(write).titleSets).toEqual([
+				`${SPINNER_FRAMES[0]} ${LABEL}`,
+				`${SPINNER_FRAMES[1]} ${LABEL}`,
+				`${SPINNER_FRAMES[2]} ${LABEL}`,
+			]);
 
 			const end = captured.events.get("agent_end")?.[0];
 			await end?.({ messages: [] } as never, createMockCtx() as never);
 			const after = classify(write);
 			expect(after.osc777).toBe(3); // + stop
-			expect(after.pushes).toBe(1);
-			expect(after.pops).toBe(1);
+			expect(after.titleSets[after.titleSets.length - 1]).toBe(LABEL); // plain label, no glyph
 
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS * 10);
-			const settled = classify(write);
-			expect(settled.titleSets.length).toBe(after.titleSets.length);
-			expect(settled.pops).toBe(1);
+			expect(classify(write).titleSets.length).toBe(after.titleSets.length); // ticker stopped
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	it("blocking tool_call pops; tool_execution_end pushes again to resume", async () => {
+	it("blocking tool_call writes the plain label and pauses; tool_execution_end resumes", async () => {
 		setWorkingWarpEnv();
 		const { write } = primeFs();
 		vi.useFakeTimers();
@@ -352,23 +340,21 @@ describe("spinner lifecycle wiring", () => {
 			);
 			const blocked = classify(write);
 			expect(blocked.osc777).toBe(3); // session_start + prompt_submit + question_asked
-			expect(blocked.pushes).toBe(1);
-			expect(blocked.pops).toBe(1);
+			expect(blocked.titleSets.length).toBe(beforeBlock + 1); // plain label written on pause
+			expect(blocked.titleSets[blocked.titleSets.length - 1]).toBe(LABEL);
 
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS * 5);
-			expect(classify(write).titleSets.length).toBe(blocked.titleSets.length);
+			expect(classify(write).titleSets.length).toBe(blocked.titleSets.length); // paused
 
 			await captured.events.get("tool_execution_end")?.[0]?.(
 				{ toolCallId: "x", toolName: "ask_user_question", result: {}, isError: false } as never,
 				createMockCtx() as never,
 			);
-			const resumed = classify(write);
-			expect(resumed.osc777).toBe(4); // + tool_complete
-			expect(resumed.pushes).toBe(2);
-			expect(resumed.pops).toBe(1);
+			expect(classify(write).osc777).toBe(4); // + tool_complete
 
+			const resumed = classify(write).titleSets.length;
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS * 2);
-			expect(classify(write).titleSets.length).toBe(resumed.titleSets.length + 2);
+			expect(classify(write).titleSets.length).toBe(resumed + 2); // ticking again
 		} finally {
 			vi.useRealTimers();
 		}
@@ -384,7 +370,7 @@ describe("spinner lifecycle wiring", () => {
 
 			await captured.events.get("agent_start")?.[0]?.({} as never, createMockCtx() as never);
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-			const before = classify(write);
+			const before = classify(write).titleSets.length;
 
 			await captured.events.get("tool_call")?.[0]?.(
 				{ toolName: "bash", input: { command: "ls" } } as never,
@@ -392,10 +378,27 @@ describe("spinner lifecycle wiring", () => {
 			);
 
 			vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-			const after = classify(write);
-			expect(after.titleSets.length).toBe(before.titleSets.length + 1);
-			expect(after.pushes).toBe(1);
-			expect(after.pops).toBe(0);
+			expect(classify(write).titleSets.length).toBe(before + 1); // still ticking
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("uses the live session name as the tab label when Pi has set one", async () => {
+		setWorkingWarpEnv();
+		const { write } = primeFs();
+		vi.useFakeTimers();
+		try {
+			const { pi, captured } = createMockPi();
+			register(pi);
+			const ctx = createMockCtx({ sessionName: "renamed session" });
+
+			await captured.events.get("agent_start")?.[0]?.({} as never, ctx as never);
+			vi.advanceTimersByTime(FRAME_INTERVAL_MS);
+			expect(classify(write).titleSets).toContain(`${SPINNER_FRAMES[0]} renamed session`);
+
+			await captured.events.get("agent_end")?.[0]?.({ messages: [] } as never, ctx as never);
+			expect(classify(write).titleSets).toContain("renamed session");
 		} finally {
 			vi.useRealTimers();
 		}

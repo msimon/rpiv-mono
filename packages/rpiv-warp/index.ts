@@ -111,11 +111,12 @@ function readBranch(ctx: ExtensionContext): SessionEntry[] {
 	return ctx.sessionManager.getBranch() as SessionEntry[];
 }
 
-// Mirror Pi's startup tab title `<mascot> - <repo>`. We only own the first
-// character (the spinner glyph during animation); push/pop restores Pi's
-// mascot verbatim on stop.
-function titleSuffix(ctx: ExtensionContext): string {
-	return ` - ${basename(ctx.cwd)}`;
+// The tab label is the live session name when Pi has set one (manual `/rename`
+// or background auto-naming), else the repo (`basename(cwd)`). Read fresh on
+// every spinner tick so a name set mid-turn appears immediately.
+function sessionLabel(ctx: ExtensionContext): string {
+	const name = ctx.sessionManager.getSessionName();
+	return name && name.length > 0 ? name : basename(ctx.cwd);
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -143,7 +144,7 @@ export default function (pi: ExtensionAPI): void {
 		const branchQuery = lastUserText(readBranch(ctx));
 		if (branchQuery.length > 0) pendingQuery = branchQuery;
 		emit(buildPromptSubmitPayload(ctx, pendingQuery));
-		startSpinner(titleSuffix(ctx));
+		startSpinner(() => sessionLabel(ctx));
 		cancelIdleTimer(); // Item 3: cancel pending idle from previous turn
 		startHeartbeat(ctx, heartbeatMs); // Item 4: heartbeat
 	});
@@ -157,7 +158,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 		pendingBlockingCalls.clear();
 		emit(buildStopPayload(ctx, readBranch(ctx)));
-		stopSpinner();
+		stopSpinner(() => sessionLabel(ctx));
 		stopHeartbeat(); // Item 4: stop heartbeat
 		startIdleTimer(ctx, readBranch(ctx)); // Item 3: schedule idle_prompt after 300ms
 	});
@@ -166,7 +167,7 @@ export default function (pi: ExtensionAPI): void {
 		if (!blockingTools.has(event.toolName)) return;
 		captureBlockingCall(event.toolCallId, event.toolName, event.input); // Item 6: capture input
 		emit(buildQuestionAskedPayload(ctx));
-		stopSpinner();
+		stopSpinner(() => sessionLabel(ctx));
 		stopHeartbeat(); // Item 4: pause heartbeat
 	});
 
@@ -174,7 +175,7 @@ export default function (pi: ExtensionAPI): void {
 		if (!blockingTools.has(event.toolName)) return;
 		const pending = consumeBlockingCall(event.toolCallId); // Item 6: consume input
 		emit(buildToolCompletePayload(ctx, event.toolName, pending?.input));
-		startSpinner(titleSuffix(ctx));
+		startSpinner(() => sessionLabel(ctx));
 		startHeartbeat(ctx, heartbeatMs); // Item 4: resume heartbeat
 	});
 

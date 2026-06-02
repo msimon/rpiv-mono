@@ -20,9 +20,6 @@ import {
 	stopSpinner,
 } from "./title-spinner.js";
 
-const PUSH = "\x1b[22;0t";
-const POP = "\x1b[23;0t";
-
 function primeFs(): { open: Mock; write: Mock; close: Mock } {
 	(fs.openSync as unknown as Mock).mockReturnValue(11);
 	(fs.writeSync as unknown as Mock).mockReturnValue(0);
@@ -58,12 +55,12 @@ afterEach(() => {
 });
 
 describe("activeTitle", () => {
-	it("returns the spinner glyph alone when no suffix is given", () => {
+	it("returns the spinner glyph alone when no label is given", () => {
 		expect(activeTitle(0)).toBe(SPINNER_FRAMES[0]);
 	});
-	it("appends the suffix verbatim — only the first character is the rotating glyph", () => {
-		expect(activeTitle(0, " - rpiv-mono")).toBe(`${SPINNER_FRAMES[0]} - rpiv-mono`);
-		expect(activeTitle(3, " - rpiv-mono")).toBe(`${SPINNER_FRAMES[3]} - rpiv-mono`);
+	it("renders `<glyph> <label>` with a single separating space", () => {
+		expect(activeTitle(0, "my session")).toBe(`${SPINNER_FRAMES[0]} my session`);
+		expect(activeTitle(3, "my session")).toBe(`${SPINNER_FRAMES[3]} my session`);
 	});
 	it("wraps frame index modulo SPINNER_FRAMES.length", () => {
 		expect(activeTitle(SPINNER_FRAMES.length)).toBe(activeTitle(0));
@@ -79,73 +76,84 @@ describe("SPINNER_FRAMES", () => {
 });
 
 describe("startSpinner / stopSpinner", () => {
-	it("start pushes the title stack and does not write a glyph synchronously", () => {
+	it("start does not write synchronously — the first glyph lands on the first tick", () => {
 		const { write } = primeFs();
-		startSpinner();
-		expect(write).toHaveBeenCalledOnce();
-		expect(bytesAt(write, 0)).toBe(PUSH);
+		startSpinner(() => "demo");
+		expect(write).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
+		expect(titleSetBody(write, 0)).toBe(`${SPINNER_FRAMES[0]} demo`);
 	});
 
-	it("ticks the title every FRAME_INTERVAL_MS, advancing through SPINNER_FRAMES", () => {
+	it("ticks `<glyph> <label>` every FRAME_INTERVAL_MS, advancing through SPINNER_FRAMES", () => {
 		const { write } = primeFs();
-		startSpinner();
+		startSpinner(() => "demo");
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-		expect(titleSetBody(write, 1)).toBe(activeTitle(0));
+		expect(titleSetBody(write, 0)).toBe(`${SPINNER_FRAMES[0]} demo`);
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-		expect(titleSetBody(write, 2)).toBe(activeTitle(1));
+		expect(titleSetBody(write, 1)).toBe(`${SPINNER_FRAMES[1]} demo`);
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-		expect(titleSetBody(write, 3)).toBe(activeTitle(2));
+		expect(titleSetBody(write, 2)).toBe(`${SPINNER_FRAMES[2]} demo`);
 	});
 
-	it("threads the suffix through every tick — only the first character rotates", () => {
+	it("re-reads the label getter each tick — a mid-animation rename appears on the next frame", () => {
 		const { write } = primeFs();
-		startSpinner(" - rpiv-mono");
+		let label = "old";
+		startSpinner(() => label);
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-		expect(titleSetBody(write, 1)).toBe(`${SPINNER_FRAMES[0]} - rpiv-mono`);
+		expect(titleSetBody(write, 0)).toBe(`${SPINNER_FRAMES[0]} old`);
+		label = "new";
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
-		expect(titleSetBody(write, 2)).toBe(`${SPINNER_FRAMES[1]} - rpiv-mono`);
+		expect(titleSetBody(write, 1)).toBe(`${SPINNER_FRAMES[1]} new`);
 	});
 
 	it("wraps the frame index back to 0 after SPINNER_FRAMES.length ticks", () => {
 		const { write } = primeFs();
-		startSpinner();
+		startSpinner(() => "demo");
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS * (SPINNER_FRAMES.length + 1));
-		expect(titleSetBody(write, 1)).toBe(activeTitle(0));
-		expect(titleSetBody(write, 1 + SPINNER_FRAMES.length)).toBe(activeTitle(0));
+		expect(titleSetBody(write, 0)).toBe(`${SPINNER_FRAMES[0]} demo`);
+		expect(titleSetBody(write, SPINNER_FRAMES.length)).toBe(`${SPINNER_FRAMES[0]} demo`);
 	});
 
-	it("stop clears the interval and pops the title stack (original restored)", () => {
+	it("stop clears the interval and writes the plain label (no glyph)", () => {
 		const { write } = primeFs();
-		startSpinner();
+		startSpinner(() => "demo");
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS * 2);
 		const before = write.mock.calls.length;
-		stopSpinner();
+		stopSpinner(() => "final");
 		expect(write).toHaveBeenCalledTimes(before + 1);
-		expect(bytesAt(write, before)).toBe(POP);
+		expect(titleSetBody(write, before)).toBe("final");
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS * 5);
 		expect(write).toHaveBeenCalledTimes(before + 1);
 	});
 
-	it("startSpinner is idempotent — second call while running does NOT push again", () => {
+	it("stop falls back to the start getter when called without one", () => {
 		const { write } = primeFs();
-		startSpinner();
-		startSpinner();
-		const pushes = write.mock.calls.filter((c) => String(c[1]) === PUSH).length;
-		expect(pushes).toBe(1);
+		startSpinner(() => "demo");
+		const before = write.mock.calls.length;
+		stopSpinner();
+		expect(titleSetBody(write, before)).toBe("demo");
 	});
 
-	it("stopSpinner is idempotent — call without an active ticker does NOT pop", () => {
+	it("startSpinner is idempotent — a second call while running keeps the first getter", () => {
 		const { write } = primeFs();
-		stopSpinner();
+		startSpinner(() => "a");
+		startSpinner(() => "b");
+		vi.advanceTimersByTime(FRAME_INTERVAL_MS);
+		expect(write).toHaveBeenCalledOnce();
+		expect(titleSetBody(write, 0)).toBe(`${SPINNER_FRAMES[0]} a`);
+	});
+
+	it("stopSpinner is idempotent — call without an active ticker does NOT write", () => {
+		const { write } = primeFs();
+		stopSpinner(() => "x");
 		expect(write).not.toHaveBeenCalled();
 	});
 
-	it("__resetState clears any pending interval without emitting a pop", () => {
+	it("__resetState clears any pending interval without writing", () => {
 		const { write } = primeFs();
-		startSpinner();
-		const afterPush = write.mock.calls.length;
+		startSpinner(() => "demo");
 		__resetState();
 		vi.advanceTimersByTime(FRAME_INTERVAL_MS * 5);
-		expect(write).toHaveBeenCalledTimes(afterPush);
+		expect(write).not.toHaveBeenCalled();
 	});
 });
