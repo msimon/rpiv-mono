@@ -9,6 +9,7 @@ import {
 	buildStopPayload,
 	buildToolCompletePayload,
 	lastAssistantText,
+	lastUserText,
 	serializePayload,
 	type WarpPayload,
 } from "./payload.js";
@@ -135,6 +136,12 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		emit(buildSessionStartPayload(ctx)); // Item 2: defensive re-announce
+		// Prefer the branch's last user-attributed entry so a skill invocation
+		// renders as `/skill:<name> <args>` (from the skill-prompt entry's
+		// details) rather than the expanded prompt body. Falls back to the raw
+		// before_agent_start prompt for turns with no user entry (e.g. synthetic).
+		const branchQuery = lastUserText(readBranch(ctx));
+		if (branchQuery.length > 0) pendingQuery = branchQuery;
 		emit(buildPromptSubmitPayload(ctx, pendingQuery));
 		startSpinner(titleSuffix(ctx));
 		cancelIdleTimer(); // Item 3: cancel pending idle from previous turn

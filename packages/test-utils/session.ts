@@ -47,6 +47,36 @@ export function makeMessageEntry(message: Message): SessionEntry {
 	return { type: "message", message } as unknown as SessionEntry;
 }
 
+export interface SkillPromptInput {
+	name: string;
+	args?: string;
+	content?: string;
+	path?: string;
+	lineCount?: number;
+}
+
+/**
+ * Build a `custom_message` entry with customType "skill-prompt" — the shape
+ * oh-my-pi persists for a `/skill:<name>` invocation. `content` holds the
+ * expanded skill body (model-facing); `details` carries the compact
+ * { name, args } a renderer should surface instead.
+ */
+export function makeSkillPromptEntry(input: SkillPromptInput): SessionEntry {
+	return {
+		type: "custom_message",
+		customType: "skill-prompt",
+		content: input.content ?? `<expanded ${input.name} skill body>`,
+		details: {
+			name: input.name,
+			path: input.path ?? `/abs/${input.name}/SKILL.md`,
+			args: input.args,
+			lineCount: input.lineCount ?? 1,
+		},
+		display: true,
+		attribution: "user",
+	} as unknown as SessionEntry;
+}
+
 export function buildSessionEntries(messages: Message[]): SessionEntry[] {
 	return messages.map(makeMessageEntry);
 }

@@ -1,4 +1,10 @@
-import { buildSessionEntries, createMockCtx, makeAssistantMessage, makeUserMessage } from "@juicesharp/rpiv-test-utils";
+import {
+	buildSessionEntries,
+	createMockCtx,
+	makeAssistantMessage,
+	makeSkillPromptEntry,
+	makeUserMessage,
+} from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	AGENT_ID,
@@ -13,7 +19,6 @@ import {
 	lastUserText,
 	projectName,
 	serializePayload,
-	summarizeSkillBlock,
 	TRUNCATE_LIMIT,
 	truncate,
 } from "./payload.js";
@@ -68,24 +73,6 @@ describe("extractMessageText", () => {
 	});
 });
 
-describe("summarizeSkillBlock", () => {
-	const wrap = (name: string, body: string, suffix?: string) =>
-		`<skill name="${name}" location="/abs/${name}/SKILL.md">\nReferences are relative to /abs/${name}.\n\n${body}\n</skill>${suffix ? `\n\n${suffix}` : ""}`;
-
-	it("collapses a wrapper with trailing-args suffix to `/skill:<name> <args>`", () => {
-		expect(summarizeSkillBlock(wrap("discover", "body text", "write a file"))).toBe("/skill:discover write a file");
-	});
-	it("collapses a wrapper with no suffix to `/skill:<name>` (token-path emit)", () => {
-		expect(summarizeSkillBlock(wrap("discover", "body text"))).toBe("/skill:discover");
-	});
-	it("passes non-skill input through verbatim", () => {
-		expect(summarizeSkillBlock("how do I deploy?")).toBe("how do I deploy?");
-	});
-	it("passes a malformed/partial wrapper through verbatim", () => {
-		expect(summarizeSkillBlock('<skill name="x"> body </skill>')).toBe('<skill name="x"> body </skill>');
-	});
-});
-
 describe("lastUserText / lastAssistantText", () => {
 	it("returns empty string on empty branch", () => {
 		expect(lastUserText([])).toBe("");
@@ -112,11 +99,13 @@ describe("lastUserText / lastAssistantText", () => {
 		const branch = buildSessionEntries([makeUserMessage(long)]);
 		expect(lastUserText(branch).length).toBe(TRUNCATE_LIMIT);
 	});
-	it("collapses a stored skill-wrapper user message to `/skill:<name> <args>`", () => {
-		const wrapped =
-			'<skill name="discover" location="/abs/discover/SKILL.md">\nReferences are relative to /abs/discover.\n\nbody text\n</skill>\n\nwrite a file';
-		const branch = buildSessionEntries([makeUserMessage(wrapped)]);
+	it("renders a skill-prompt custom entry as `/skill:<name> <args>`", () => {
+		const branch = [makeSkillPromptEntry({ name: "discover", args: "write a file" })];
 		expect(lastUserText(branch)).toBe("/skill:discover write a file");
+	});
+	it("renders a skill-prompt custom entry with no args as `/skill:<name>`", () => {
+		const branch = [makeSkillPromptEntry({ name: "discover" })];
+		expect(lastUserText(branch)).toBe("/skill:discover");
 	});
 });
 
@@ -174,11 +163,10 @@ describe("build*Payload", () => {
 		const p = buildPromptSubmitPayload(createMockCtx());
 		expect(p.query).toBe("");
 	});
-	it("buildPromptSubmitPayload collapses a wrapped skill query to `/skill:<name> <args>`", () => {
-		const wrapped =
-			'<skill name="discover" location="/abs/discover/SKILL.md">\nReferences are relative to /abs/discover.\n\nbody text\n</skill>\n\nwrite a file';
-		const p = buildPromptSubmitPayload(createMockCtx(), wrapped);
-		expect(p.query).toBe("/skill:discover write a file");
+	it("buildPromptSubmitPayload truncates an over-long query", () => {
+		const long = "x".repeat(TRUNCATE_LIMIT + 50);
+		const p = buildPromptSubmitPayload(createMockCtx(), long);
+		expect(p.query?.length).toBe(TRUNCATE_LIMIT);
 	});
 	it("buildToolCompletePayload carries tool_input when provided", () => {
 		const p = buildToolCompletePayload(createMockCtx(), "bash", { command: "npm test" });

@@ -8,7 +8,7 @@
 
 import { basename } from "node:path";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import { type ExtensionContext, parseSkillBlock, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { negotiateProtocolVersion, type WarpEvent } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -79,19 +79,31 @@ export function extractMessageText(content: UserMessage["content"] | AssistantMe
 }
 
 /**
- * Collapse a `<skill name="…" location="…">…</skill>` wrapper (emitted by
- * `rpiv-args` and Pi's built-in skill expander) back to the user-facing
- * `/skill:<name> <args>` shorthand. Non-skill input passes through verbatim.
- *
- * Why: Warp surfaces this string in the `question_asked` toast. The wrapper
- * is a load-bearing LLM-input format, not something the human typed —
- * showing it raw leaks `<skill name="…" location="/abs/path">` into the
- * notification. Inverse of the wrapper builder in `rpiv-args/args.ts:205`.
+ * oh-my-pi persists a `/skill:<name>` invocation as a `custom_message` entry
+ * (customType "skill-prompt") whose `content` is the fully expanded skill body
+ * but whose `details` carries the compact { name, args } the user actually
+ * typed. Read the latter so the toast shows `/skill:<name> <args>` instead of
+ * dumping the expanded prompt. The entry shape is oh-my-pi-specific; the guard
+ * is duck-typed and simply never matches on other Pi builds, where it falls
+ * through to plain message text.
  */
-export function summarizeSkillBlock(text: string): string {
-	const parsed = parseSkillBlock(text);
-	if (!parsed) return text;
-	return parsed.userMessage ? `/skill:${parsed.name} ${parsed.userMessage}` : `/skill:${parsed.name}`;
+interface SkillPromptDetails {
+	readonly name: string;
+	readonly args?: string;
+}
+
+function readSkillPromptDetails(entry: SessionEntry): SkillPromptDetails | undefined {
+	// Cross-fork boundary: the `custom_message`/`skill-prompt` shape is oh-my-pi-
+	// specific and absent from upstream Pi's `SessionEntry` union, so widen via
+	// `unknown` and read the fields defensively below.
+	const record = entry as unknown as Record<string, unknown>;
+	if (record.type !== "custom_message" || record.customType !== "skill-prompt") return undefined;
+	const details = record.details;
+	if (typeof details !== "object" || details === null) return undefined;
+	const name = (details as { name?: unknown }).name;
+	if (typeof name !== "string" || name.length === 0) return undefined;
+	const rawArgs = (details as { args?: unknown }).args;
+	return { name, args: typeof rawArgs === "string" && rawArgs.length > 0 ? rawArgs : undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +117,14 @@ function isMessageEntry(entry: SessionEntry): entry is SessionEntry & { type: "m
 function findLastMessageText(branch: SessionEntry[], role: "user" | "assistant"): string {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
+		if (role === "user") {
+			const skill = readSkillPromptDetails(entry);
+			if (skill) return truncate(skill.args ? `/skill:${skill.name} ${skill.args}` : `/skill:${skill.name}`);
+		}
 		if (!isMessageEntry(entry)) continue;
 		const message = entry.message;
 		if (message.role !== role) continue;
-		const text = summarizeSkillBlock(extractMessageText((message as UserMessage | AssistantMessage).content));
+		const text = extractMessageText((message as UserMessage | AssistantMessage).content);
 		if (text.length > 0) return truncate(text);
 	}
 	return "";
@@ -149,7 +165,7 @@ export function buildSessionStartPayload(ctx: ExtensionContext): WarpPayload {
 export function buildPromptSubmitPayload(ctx: ExtensionContext, query: string = ""): WarpPayload {
 	return {
 		...baseEnvelope("prompt_submit", ctx),
-		query: summarizeSkillBlock(query),
+		query: truncate(query),
 	};
 }
 

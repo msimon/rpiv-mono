@@ -4,6 +4,7 @@ import {
 	createMockCtx,
 	createMockPi,
 	makeAssistantMessage,
+	makeSkillPromptEntry,
 	makeUserMessage,
 } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
@@ -161,6 +162,29 @@ describe("agent_start handler", () => {
 		const promptSubmit = osc777Writes.find((p) => p.event === "prompt_submit");
 		expect(promptSubmit).toBeDefined();
 		expect(promptSubmit!.query).toBe("");
+	});
+
+	it("renders a skill invocation as `/skill:<name> <args>` from the branch skill-prompt entry", async () => {
+		setWorkingWarpEnv();
+		const { write } = primeFs();
+		const { pi, captured } = createMockPi();
+		register(pi);
+
+		const branch = [makeSkillPromptEntry({ name: "discover", args: "write a file" })];
+		const handler = captured.events.get("agent_start")?.[0];
+		await handler?.({} as never, createMockCtx({ branch }) as never);
+
+		const osc777Writes = write.mock.calls
+			.filter((c) => String(c[1]).startsWith("\x1b]777;notify;"))
+			.map((c) => {
+				const json = String(c[1])
+					.replace(/^\x1b\]777;notify;warp:\/\/cli-agent;/, "")
+					.replace(/\x07$/, "");
+				return JSON.parse(json);
+			});
+		const promptSubmit = osc777Writes.find((p) => p.event === "prompt_submit");
+		expect(promptSubmit).toBeDefined();
+		expect(promptSubmit!.query).toBe("/skill:discover write a file");
 	});
 });
 
